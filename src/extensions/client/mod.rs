@@ -112,6 +112,25 @@ pub fn bool_true() -> bool {
 }
 
 #[derive(Debug)]
+pub enum RotateReason {
+    RequestTimeout { method: String },
+    StaleHead,
+    ReorgDetected,
+    ManualRotate,
+}
+
+impl std::fmt::Display for RotateReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RotateReason::RequestTimeout { method } => write!(f, "request_timeout(method={method})"),
+            RotateReason::StaleHead => write!(f, "stale_head"),
+            RotateReason::ReorgDetected => write!(f, "reorg_detected"),
+            RotateReason::ManualRotate => write!(f, "manual_rotate"),
+        }
+    }
+}
+
+#[derive(Debug)]
 enum Message {
     Request {
         method: String,
@@ -126,7 +145,7 @@ enum Message {
         response: tokio::sync::oneshot::Sender<Result<Subscription<JsonValue>, Error>>,
         retries: u32,
     },
-    RotateEndpoint,
+    RotateEndpoint(RotateReason),
 }
 
 #[async_trait]
@@ -265,9 +284,11 @@ impl Client {
                                                 }
 
                                                 if matches!(err, Error::RequestTimeout) {
-                                                    tx.send(Message::RotateEndpoint)
-                                                        .await
-                                                        .expect("Failed to send rotate message");
+                                                    tx.send(Message::RotateEndpoint(RotateReason::RequestTimeout {
+                                                        method: method.clone(),
+                                                    }))
+                                                    .await
+                                                    .expect("Failed to send rotate message");
                                                 }
 
                                                 tx.send(Message::Request {
@@ -341,9 +362,11 @@ impl Client {
                                                 }
 
                                                 if matches!(err, Error::RequestTimeout) {
-                                                    tx.send(Message::RotateEndpoint)
-                                                        .await
-                                                        .expect("Failed to send rotate message");
+                                                    tx.send(Message::RotateEndpoint(RotateReason::RequestTimeout {
+                                                        method: subscribe.clone(),
+                                                    }))
+                                                    .await
+                                                    .expect("Failed to send rotate message");
                                                 }
 
                                                 tx.send(Message::Subscribe {
@@ -376,7 +399,7 @@ impl Client {
                                 let _ = response.send(Err(Error::RequestTimeout));
                             }
                         }
-                        Message::RotateEndpoint => {
+                        Message::RotateEndpoint(_) => {
                             unreachable!()
                         }
                     }
@@ -386,16 +409,16 @@ impl Client {
             loop {
                 tokio::select! {
                     _ = ws.on_disconnect() => {
-                        tracing::info!("Endpoint disconnected");
+                        tracing::info!("Endpoint disconnected, reconnecting via failover");
                         tokio::time::sleep(get_backoff_time(&connect_backoff_counter)).await;
                         ws = build_ws().await;
                     }
                     message = message_rx.recv() => {
                         tracing::trace!("Received message {message:?}");
                         match message {
-                            Some(Message::RotateEndpoint) => {
+                            Some(Message::RotateEndpoint(reason)) => {
                                 rotation_notify_bg.notify_waiters();
-                                tracing::info!("Rotate endpoint");
+                                tracing::info!("Rotate endpoint (reason: {reason})");
                                 ws = build_ws().await;
                             }
                             Some(message) => handle_message(message, ws.clone()),
@@ -475,8 +498,12 @@ impl Client {
     }
 
     pub async fn rotate_endpoint(&self) {
+        self.rotate_endpoint_with_reason(RotateReason::ManualRotate).await
+    }
+
+    pub async fn rotate_endpoint_with_reason(&self, reason: RotateReason) {
         self.sender
-            .send(Message::RotateEndpoint)
+            .send(Message::RotateEndpoint(reason))
             .await
             .expect("Failed to rotate endpoint");
     }

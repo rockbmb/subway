@@ -108,7 +108,9 @@ impl SubstrateApi {
                             }
                             _ = interval.tick() => {
                                 tracing::warn!("No new blocks for {stale_timeout:?} seconds, rotating endpoint");
-                                client.rotate_endpoint().await;
+                                client
+                                    .rotate_endpoint_with_reason(crate::extensions::client::RotateReason::StaleHead)
+                                    .await;
                                 break;
                             }
                             _ = client.on_rotation() => {
@@ -154,7 +156,11 @@ impl SubstrateApi {
                                     if let Err(e) = super::validate_new_head(&finalized_head_tx, number, &hash)
                                     {
                                         tracing::error!("Error in background task: {e}");
-                                        client.rotate_endpoint().await;
+                                        client
+                                            .rotate_endpoint_with_reason(
+                                                crate::extensions::client::RotateReason::ReorgDetected,
+                                            )
+                                            .await;
                                         break;
                                     }
 

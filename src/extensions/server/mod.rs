@@ -225,6 +225,7 @@ impl SubwayServerBuilder {
                     }
 
                     let call_metrics = rpc_metrics.call_metrics();
+                    let socket_ip_for_log = socket_ip.clone();
 
                     async move {
                         let rpc_middleware =
@@ -250,9 +251,11 @@ impl SubwayServerBuilder {
                         if is_websocket {
                             let on_ws_close = service.on_session_closed();
                             rpc_metrics.ws_open();
+                            tracing::debug!("Client WebSocket opened from {socket_ip_for_log}");
                             tokio::spawn(async move {
                                 on_ws_close.await;
                                 rpc_metrics.ws_closed();
+                                tracing::debug!("Client WebSocket closed from {socket_ip_for_log}");
                             });
                         }
 
